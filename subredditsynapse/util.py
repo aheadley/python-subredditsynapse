@@ -19,10 +19,12 @@
 import logging
 
 
-if hasattr(logging, 'NullHandler'):
+try:
     NullHandler = logging.NullHandler
-else:
+except AttributeError:
     class NullHandler(logging.Handler):
+        level = 100
+
         def handle(self, record):
             pass
 
@@ -33,3 +35,12 @@ else:
             self.lock = None
 
 LOG_FORMAT = logging.Formatter('[%(asctime)s] %(levelname)8s - %(name)s: %(message)s')
+
+def get_root_logger(level=logging.DEBUG):
+    l = logging.getLogger()
+    l.setLevel(level)
+    # l.addHandler(NullHandler)
+    stderr = logging.StreamHandler()
+    stderr.setFormatter(LOG_FORMAT)
+    l.addHandler(stderr)
+    return l
