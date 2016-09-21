@@ -4,16 +4,18 @@ import random
 import bz2
 import json
 import logging
+import os.path
 
 from keras.models import Sequential, load_model
 from keras.layers import Dense, Activation, Dropout
 from keras.layers import LSTM
 from keras.optimizers import RMSprop, Adam
-from keras.callbacks import ModelCheckpoint
+from keras.callbacks import ModelCheckpoint, EarlyStopping
 import numpy
 
 from subredditsynapse.data import SEP_CHAR, CHAR_WIDTH, RedditDataDump, \
-    DataSegmenter, byte2vec, vec2byte, SegmentBatcher
+    DataSegmenter, byte2vec, vec2byte, SegmentBatcher, comment_transform, \
+    comment_filter
 from subredditsynapse.util import get_root_logger
 
 logger = get_root_logger()
@@ -37,28 +39,20 @@ def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2
 
     return model
 
-def train_model(model, training_data, samples_per_epoch, nb_epoch):
+def train_model(model, training_data, validation_data, samples_per_epoch, nb_epoch):
     result = model.fit_generator(
         training_data,
         samples_per_epoch=samples_per_epoch,
         nb_epoch=nb_epoch,
 
-        validation_data= \
-            SegmentBatcher(1024,
-                DataSegmenter(
-                    RedditDataDump('/tmp/RC_2007-08.bz2', transform_func=lambda d: bytearray(d['body'].encode('utf-8'))),
-                    8, 3,
-                )
-            ),
+        validation_data=validation_data,
         nb_val_samples=samples_per_epoch / 3,
 
         callbacks=[
-            ModelCheckpoint('last-loss.h5',
-                monitor='loss', verbose=0, save_best_only=False, mode='auto'),
-            ModelCheckpoint('best-loss.h5',
-                monitor='loss', verbose=0, save_best_only=True, mode='auto'),
-            ModelCheckpoint('best-acc.h5',
+            ModelCheckpoint('model.best-acc.h5',
                 monitor='acc', verbose=0, save_best_only=True, mode='auto'),
+            EarlyStopping(monitor='val_acc', patience=2),
+            EarlyStopping(monitor='acc', patience=3),
         ],
     )
 
@@ -68,71 +62,114 @@ def prep_seed(seed, segment_size):
     seed = bytearray(seed[-(segment_size - 1):] + '\x00')
     X_p = numpy.zeros((1, segment_size, CHAR_WIDTH), dtype=numpy.bool)
     for i in range(segment_size):
-        # !!! maybe needs to be a FP, see line #94
         X_p[0, i] = byte2vec(seed[i])
-    logger.debug('X_p.shape=%r', X_p.shape)
     return X_p
 
 def generate_comment(model, seed, segment_size, temperature=1.0):
     def sample_func(a):
+        a = a.astype('float64')
         a = numpy.log(a) / temperature
         a = numpy.exp(a) / numpy.sum(numpy.exp(a))
-        return numpy.argmax(numpy.random.multinomial(1, a, 1))
+        try:
+            v = numpy.random.multinomial(1, a)
+        except ValueError:
+            v = numpy.random.multinomial(1, a/2)
+        return numpy.argmax(v)
     comment = bytearray()
-    seed = prep_seed(seed, segment_size)
+    buf = prep_seed(seed, segment_size)
 
     while True:
-        prediction = model.predict(seed, verbose=0)
-        # logger.debug('prediction: %r', prediction)
-        # logger.debug('prediction[0]: %r', prediction[0])
-        next_byte = sample_func(prediction[0])
+        pred = model.predict(buf, verbose=0)[0]
+        next_byte = sample_func(pred)
         if next_byte == 0:
             break
         comment.append(next_byte)
-        # logger.debug('Generated character: % 3d', next_byte)
-        # logger.debug('Generated character: "%s" (% 3d)',
-        #     unicode(bytearray(next_byte)).decode('utf-8'), next_byte)
-    return unicode(comment).decode('utf-8', 'ignore')
+        buf[:-1] = buf[1:]
+        buf[-1] = byte2vec(next_byte)
 
-
+    return comment.decode('latin-1')
 
 if __name__ == '__main__':
     import sys
     import optparse
 
-    data_fn = sys.argv[1]
-    try:
-        sys.argv[2]
-        use_model_file = True
-    except IndexError:
-        use_model_file = False
+    parser = optparse.OptionParser()
 
-    batch_size = 1024
-    segment_size = 8
-    step_size = 3
+    parser.add_option('-T', '--train',
+        action='store_true', default=False)
+    parser.add_option('-b', '--batch-size',
+        type='int', default=1024)
+    parser.add_option('-g', '--segment-size',
+        type='int', default=16)
+    parser.add_option('-S', '--step-size',
+        type='int', default=1)
+    parser.add_option('-l', '--layer-size',
+        type='int', default=128)
+    parser.add_option('-s', '--samples-per-epoch',
+        type='int', default=10)
+    parser.add_option('-e', '--epochs',
+        type='int', default=1)
+    parser.add_option('-V', '--validation-data')
 
-    samples_per_epoch = batch_size * 200
-    nb_epoch = 32
+    parser.add_option('-P', '--predict',
+        action='store_true', default=False)
+    parser.add_option('-t', '--temperature',
+        type='float', default=0.8)
 
-    if use_model_file:
-        model = load_model('model.h5')
+    parser.add_option('-f', '--model-file',
+        default=None)
+
+
+    parser.add_option('-v', '--verbose',
+        action='store_true', default=False)
+
+    opts, args = parser.parse_args()
+
+    if opts.verbose:
+        logger.setLevel(logging.DEBUG)
     else:
-        logger.info('Setting up data source...')
-        data_src = RedditDataDump(data_fn, transform_func=lambda d: bytearray(d['body'].encode('utf-8')))
-        segments = DataSegmenter(data_src, segment_size, step_size)
-        batches = SegmentBatcher(batch_size, segments)
+        logger.setLevel(logging.INFO)
 
+    if opts.model_file is not None and os.path.exists(opts.model_file):
+        logger.info('Loading model from file: %s', opts.model_file)
+        model = load_model(opts.model_file)
+    else:
         logger.info('Building model...')
-        model = build_model(batch_size, segment_size, step_size, layer_size=512)
+        model = build_model(opts.batch_size, opts.segment_size, opts.step_size,
+            layer_size=opts.layer_size)
+    if opts.verbose:
         model.summary()
 
-        logger.info('Training model...')
-        train_model(model, batches, samples_per_epoch, nb_epoch)
+    if opts.train:
+        samples_per_epoch = opts.samples_per_epoch * opts.batch_size
+        if opts.validation_data:
+            validation_data = SegmentBatcher(opts.batch_size,
+                DataSegmenter(
+                    lambda: RedditDataDump(opts.validation_data,
+                        transform_func=comment_transform, filter_func=comment_filter),
+                    opts.segment_size, opts.step_size,
+                )
+            )
+        else:
+            validation_data = None
 
-        model.save('model.h5')
+        for src_data_fn in args:
+            logger.info('Loading data source: %s', src_data_fn)
+            data_src = lambda: RedditDataDump(src_data_fn,
+                transform_func=comment_transform, filter_func=comment_filter)
+            segments = DataSegmenter(data_src, opts.segment_size, opts.step_size,
+                segment_limit=opts.batch_size*opts.samples_per_epoch)
+            training_data = SegmentBatcher(opts.batch_size, segments)
+            logger.info('Training model on %d batches * %d epochs...',
+                opts.samples_per_epoch, opts.epochs)
+            train_model(model, training_data, validation_data, samples_per_epoch, opts.epochs)
 
-    logger.info('Generating a new comment...')
-    c = generate_comment(model, SEED_COMMENT, segment_size, temperature=0.8)
+            if opts.model_file is not None:
+                logger.info('Saving model...')
+                model.save(opts.model_file)
 
-    # print repr(c)
-    logger.info('Comment: %r', c)
+    if opts.predict:
+        logger.info('Generating a new comment...')
+        comment = generate_comment(model, SEED_COMMENT, opts.segment_size, temperature=0.8)
+
+        logger.info('Generated comment: %s', comment)
