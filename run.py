@@ -7,6 +7,7 @@ import logging
 import os.path
 
 from keras.models import Sequential, load_model
+from keras.layers import InputLayer
 from keras.layers import Dense, Activation, Dropout
 from keras.layers import LSTM
 from keras.optimizers import RMSprop, Adam
@@ -24,7 +25,8 @@ SEED_COMMENT = 'The quick brown fox jumped over the lazy dog.'
 
 def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2, loss_rate=0.01):
     model = Sequential()
-    model.add(LSTM(layer_size, input_shape=(batch_size, segment_size, CHAR_WIDTH), stateful=True, return_sequences=True))
+    model.add(InputLayer(batch_input_shape=(batch_size, segment_size, CHAR_WIDTH), input_dtype='uint8'))
+    model.add(LSTM(layer_size, stateful=True, return_sequences=True))
     model.add(Dropout(dropout))
     model.add(LSTM(layer_size, return_sequences=False))
     model.add(Dropout(dropout))
@@ -40,14 +42,22 @@ def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2
     return model
 
 def train_model(model, training_data, validation_data, samples_per_epoch, nb_epoch):
-    for i in range(samples_per_epoch):
-        X, y = next(training_data)
-        model.train_on_batch(X, y)
+    result = model.fit_generator(
+        training_data,
+        samples_per_epoch=samples_per_epoch,
+        nb_epoch=nb_epoch,
 
-    for i in range(samples_per_epoch/3):
-        X, y = next(validation_data)
-        model.test_on_batch(X, y)
+        validation_data=validation_data,
+        nb_val_samples=samples_per_epoch / 3,
+        callbacks=[
+            ModelCheckpoint('model.best-acc.h5',
+                monitor='acc', verbose=0, save_best_only=True, mode='auto'),
+            EarlyStopping(monitor='val_acc', patience=2),
+            EarlyStopping(monitor='acc', patience=3),
+        ],
+    )
 
+    return result
 
 def prep_seed(seed, segment_size):
     seed = bytearray(seed[-(segment_size - 1):] + '\x00')
