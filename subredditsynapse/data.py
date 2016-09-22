@@ -47,6 +47,7 @@ def RedditDataDump(fn, filter_func=lambda d: True, transform_func=lambda d: d, l
                     continue
                 logger.debug('Loaded datum: id=% 6s len=%06d with keys: %s', datum['id'], len(json_line), datum.keys())
                 if filter_func(datum):
+                    logger.debug('Comment: %s', datum['body'])
                     try:
                         line_num += 1
                         yield transform_func(datum)
@@ -54,6 +55,8 @@ def RedditDataDump(fn, filter_func=lambda d: True, transform_func=lambda d: d, l
                         logger.exception(err)
                         logger.error(err)
                         continue
+                else:
+                    logger.debug('Skipping datum: %s', datum['body'])
             f.seek(0)
             line_num = 0
 
@@ -71,7 +74,7 @@ def DataSegmenter(input_data, segment_size, step_size, segment_sep=SEP_CHAR, seg
                 next_char = segment_buffer[segment_size]
                 segment_buffer = segment_buffer[step_size:]
 
-                X_i = numpy.zeros((segment_size, CHAR_WIDTH), dtype=numpy.bool)
+                X_i = numpy.zeros((segment_size, CHAR_WIDTH), dtype=numpy.uint8)
                 for c in range(segment_size):
                     X_i[c] = byte2vec(seg[c])
                 y_i = byte2vec(next_char)
@@ -85,8 +88,8 @@ def DataSegmenter(input_data, segment_size, step_size, segment_sep=SEP_CHAR, seg
 
 
 def SegmentBatcher(batch_size, segments):
+    logger.debug('Creating new batcher: len=%02d', batch_size)
     while True:
-        logger.debug('Creating new batch: len=%02d', batch_size)
         batch = [next(segments) for i in range(batch_size)]
         X_b = numpy.zeros((batch_size,) + batch[0][0].shape)
         y_b = numpy.zeros((batch_size, CHAR_WIDTH))
@@ -98,7 +101,7 @@ def SegmentBatcher(batch_size, segments):
 
 
 def byte2vec(b):
-    v = numpy.zeros(CHAR_WIDTH, dtype=numpy.bool)
+    v = numpy.zeros(CHAR_WIDTH, dtype=numpy.uint8)
     v[b] = 1
     return v
 

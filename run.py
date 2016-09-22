@@ -28,6 +28,8 @@ def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2
     model.add(InputLayer(batch_input_shape=(batch_size, segment_size, CHAR_WIDTH), input_dtype='uint8'))
     model.add(LSTM(layer_size, stateful=True, return_sequences=True))
     model.add(Dropout(dropout))
+    model.add(LSTM(layer_size, stateful=True, return_sequences=True))
+    model.add(Dropout(dropout))
     model.add(LSTM(layer_size, return_sequences=False))
     model.add(Dropout(dropout))
     model.add(Dense(CHAR_WIDTH))
@@ -50,23 +52,24 @@ def train_model(model, training_data, validation_data, samples_per_epoch, nb_epo
         validation_data=validation_data,
         nb_val_samples=samples_per_epoch / 3,
         callbacks=[
-            ModelCheckpoint('model.best-acc.h5',
-                monitor='acc', verbose=0, save_best_only=True, mode='auto'),
+            # ModelCheckpoint('model.best-acc.h5',
+            #     monitor='acc', verbose=0, save_best_only=True, mode='auto'),
             EarlyStopping(monitor='val_acc', patience=2),
             EarlyStopping(monitor='acc', patience=3),
+            EarlyStopping(monitor='loss', patience=3),
         ],
     )
 
     return result
 
-def prep_seed(seed, segment_size):
+def prep_seed(seed, batch_size, segment_size):
     seed = bytearray(seed[-(segment_size - 1):] + '\x00')
-    X_p = numpy.zeros((1, segment_size, CHAR_WIDTH), dtype=numpy.bool)
+    X_p = numpy.zeros((batch_size, segment_size, CHAR_WIDTH), dtype=numpy.uint8)
     for i in range(segment_size):
         X_p[0, i] = byte2vec(seed[i])
     return X_p
 
-def generate_comment(model, seed, segment_size, temperature=1.0):
+def generate_comment(model, seed, batch_size, segment_size, temperature=1.0):
     def sample_func(a):
         a = a.astype('float64')
         a = numpy.log(a) / temperature
@@ -77,7 +80,7 @@ def generate_comment(model, seed, segment_size, temperature=1.0):
             v = numpy.random.multinomial(1, a/2)
         return numpy.argmax(v)
     comment = bytearray()
-    buf = prep_seed(seed, segment_size)
+    buf = prep_seed(seed, batch_size, segment_size)
 
     while True:
         pred = model.predict(buf, verbose=0)[0]
@@ -171,6 +174,6 @@ if __name__ == '__main__':
 
     if opts.predict:
         logger.info('Generating a new comment...')
-        comment = generate_comment(model, SEED_COMMENT, opts.segment_size, temperature=0.8)
+        comment = generate_comment(model, SEED_COMMENT, opts.batch_size, opts.segment_size, temperature=0.8)
 
         logger.info('Generated comment: %s', comment)
