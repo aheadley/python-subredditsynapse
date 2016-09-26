@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 SEP_CHAR    = '\x00'
 CHAR_WIDTH  = 2**8
+ARRAY_DTYPE = numpy.uint8
 
 _HTML_PARSER = HTMLParser()
 
@@ -74,7 +75,7 @@ def DataSegmenter(input_data, segment_size, step_size, segment_sep=SEP_CHAR, seg
                 next_char = segment_buffer[segment_size]
                 segment_buffer = segment_buffer[step_size:]
 
-                X_i = numpy.zeros((segment_size, CHAR_WIDTH), dtype=numpy.uint8)
+                X_i = numpy.zeros((segment_size, CHAR_WIDTH), dtype=ARRAY_DTYPE)
                 for c in range(segment_size):
                     X_i[c] = byte2vec(seg[c])
                 y_i = byte2vec(next_char)
@@ -101,7 +102,7 @@ def SegmentBatcher(batch_size, segments):
 
 
 def byte2vec(b):
-    v = numpy.zeros(CHAR_WIDTH, dtype=numpy.uint8)
+    v = numpy.zeros((CHAR_WIDTH,), dtype=ARRAY_DTYPE)
     v[b] = 1
     return v
 

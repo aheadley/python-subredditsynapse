@@ -25,13 +25,14 @@ SEED_COMMENT = 'The quick brown fox jumped over the lazy dog.'
 
 def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2, loss_rate=0.01):
     model = Sequential()
-    model.add(InputLayer(batch_input_shape=(batch_size, segment_size, CHAR_WIDTH), input_dtype='uint8'))
-    model.add(LSTM(layer_size, stateful=True, return_sequences=True))
-    model.add(Dropout(dropout))
-    model.add(LSTM(layer_size, stateful=True, return_sequences=True))
-    model.add(Dropout(dropout))
-    model.add(LSTM(layer_size, return_sequences=False))
-    model.add(Dropout(dropout))
+    # model.add(InputLayer(batch_input_shape=(batch_size, segment_size, CHAR_WIDTH), input_dtype='uint8'))
+    # model.add(LSTM(layer_size, stateful=True, return_sequences=True))
+    # model.add(Dropout(dropout))
+    # model.add(LSTM(layer_size, stateful=True, return_sequences=True))
+    # model.add(Dropout(dropout))
+    # model.add(LSTM(layer_size, return_sequences=False))
+    model.add(LSTM(layer_size, input_shape=(segment_size, CHAR_WIDTH), return_sequences=False))
+    # model.add(Dropout(dropout))
     model.add(Dense(CHAR_WIDTH))
     model.add(Activation('softmax'))
 
@@ -43,24 +44,27 @@ def build_model(batch_size, segment_size, step_size, layer_size=128, dropout=0.2
 
     return model
 
-def train_model(model, training_data, validation_data, samples_per_epoch, nb_epoch):
-    result = model.fit_generator(
-        training_data,
-        samples_per_epoch=samples_per_epoch,
-        nb_epoch=nb_epoch,
+def train_model(model, training_data, validation_data, samples_per_epoch, nb_epoch, gen_pred=None):
+    for i in range(nb_epoch):
+        logger.info('Starting epoch: % 2d/% 2d', i+1, nb_epoch)
+        model.fit_generator(
+            training_data,
+            samples_per_epoch=samples_per_epoch,
+            nb_epoch=1,
 
-        validation_data=validation_data,
-        nb_val_samples=samples_per_epoch / 3,
-        callbacks=[
-            # ModelCheckpoint('model.best-acc.h5',
-            #     monitor='acc', verbose=0, save_best_only=True, mode='auto'),
-            EarlyStopping(monitor='val_acc', patience=2),
-            EarlyStopping(monitor='acc', patience=3),
-            EarlyStopping(monitor='loss', patience=3),
-        ],
-    )
-
-    return result
+            validation_data=validation_data,
+            nb_val_samples=samples_per_epoch / 3,
+            callbacks=[
+                # ModelCheckpoint('model.best-acc.h5',
+                #     monitor='acc', verbose=0, save_best_only=True, mode='auto'),
+                # EarlyStopping(monitor='val_acc', patience=2),
+                # EarlyStopping(monitor='acc', patience=3),
+                # EarlyStopping(monitor='loss', patience=3),
+            ],
+        )
+        if gen_pred is not None:
+            gen_pred()
+        model.reset_states()
 
 def prep_seed(seed, batch_size, segment_size):
     seed = bytearray(seed[-(segment_size - 1):] + '\x00')
@@ -69,21 +73,23 @@ def prep_seed(seed, batch_size, segment_size):
         X_p[0, i] = byte2vec(seed[i])
     return X_p
 
-def generate_comment(model, seed, batch_size, segment_size, temperature=1.0):
+def generate_comment(model, seed, batch_size, segment_size, temperature=1.0, max_length=400):
     def sample_func(a):
         a = a.astype('float64')
         a = numpy.log(a) / temperature
-        a = numpy.exp(a) / numpy.sum(numpy.exp(a))
+        a_exp = numpy.exp(a)
+        a = a_exp / numpy.sum(a_exp)
         try:
-            v = numpy.random.multinomial(1, a)
+            v = numpy.random.multinomial(1, a, 1)
         except ValueError:
-            v = numpy.random.multinomial(1, a/2)
+            v = numpy.random.multinomial(1, a/2, 1)
         return numpy.argmax(v)
     comment = bytearray()
     buf = prep_seed(seed, batch_size, segment_size)
 
-    while True:
-        pred = model.predict(buf, verbose=0)[0]
+    model.reset_states()
+    for i in range(max_length):
+        pred = model.predict(buf[0:1], verbose=0)[0]
         next_byte = sample_func(pred)
         if next_byte == 0:
             break
@@ -166,7 +172,15 @@ if __name__ == '__main__':
             training_data = SegmentBatcher(opts.batch_size, segments)
             logger.info('Training model on %d batches * %d epochs...',
                 opts.samples_per_epoch, opts.epochs)
-            train_model(model, training_data, validation_data, samples_per_epoch, opts.epochs)
+            if opts.verbose:
+                gen_pred = lambda: logger.info('Checkpoint comment: %s',
+                    generate_comment(model, SEED_COMMENT, opts.batch_size, opts.segment_size,
+                        temperature=opts.temperature))
+            else:
+                gen_pred = None
+
+            train_model(model, training_data, validation_data, samples_per_epoch, opts.epochs,
+                gen_pred=gen_pred)
 
             if opts.model_file is not None:
                 logger.info('Saving model...')
